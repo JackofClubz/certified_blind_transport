@@ -1,0 +1,10 @@
+{
+  "name": "cbt",
+  "build": { "dockerfile": "../docker/build.Dockerfile", "context": ".." },
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"]
+    }
+  },
+  "postCreateCommand": "cd web/demo && npm install"
+}

@@ -1,0 +1,7 @@
+services:
+  preview:
+    image: caddy:2
+    volumes:
+      - ../web/demo/dist:/srv:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports: ["8080:80"]

@@ -1,0 +1,68 @@
+[workspace]
+members = [
+    "crates/bt-arith",
+    "crates/bt-market",
+    "crates/bt-ckks",
+    "crates/bt-mhe",
+    "crates/bt-cert",
+    "crates/bt-engine",
+    "crates/bt-protocol",
+    "crates/bt-wasm",
+    "crates/bt-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+version = "0.1.0"
+rust-version = "1.90"
+repository = "https://github.com/lance-tersou/certified-blind-transport"
+
+[workspace.dependencies]
+bt-arith = { path = "crates/bt-arith" }
+bt-market = { path = "crates/bt-market" }
+bt-ckks = { path = "crates/bt-ckks" }
+bt-mhe = { path = "crates/bt-mhe" }
+bt-cert = { path = "crates/bt-cert" }
+bt-engine = { path = "crates/bt-engine" }
+bt-protocol = { path = "crates/bt-protocol" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["alloc", "use-std"] }
+rand_core = "0.6"
+rand_chacha = "0.3"
+sha2 = "0.10"
+merlin = "3"
+curve25519-dalek = { version = "4", features = ["digest", "rand_core"] }
+bulletproofs = "5"
+subtle = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.release-debuginfo]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.test]
+opt-level = 3
+
+[patch.crates-io]
+# merlin pulls clear_on_drop, whose default feature needs a C compiler on wasm.
+clear_on_drop = { path = "vendor/clear_on_drop" }

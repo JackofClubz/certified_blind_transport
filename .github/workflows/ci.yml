@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+          targets: "wasm32-unknown-unknown"
+          components: "rustfmt, clippy"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --exclude bt-wasm
+      - run: cargo test --workspace --release --exclude bt-wasm
+      - run: cargo build -p bt-wasm --release --target wasm32-unknown-unknown

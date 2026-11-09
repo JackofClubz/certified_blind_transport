@@ -1,0 +1,26 @@
+[package]
+name = "bt-wasm"
+description = "wasm-bindgen façade for Certified Blind Transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bt-protocol.workspace = true
+bt-ckks.workspace = true
+bt-cert.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true
+getrandom = { version = "0.2", features = ["js"] }
+sha2.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true

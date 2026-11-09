@@ -1,0 +1,6 @@
+[package]
+name = "clear_on_drop"
+version = "0.2.5"
+edition = "2021"
+description = "Pure-Rust stub so wasm builds do not need clang (demo only)"
+license = "MIT OR Apache-2.0"

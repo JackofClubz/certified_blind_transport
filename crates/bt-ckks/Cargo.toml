@@ -1,0 +1,16 @@
+[package]
+name = "bt-ckks"
+description = "Toy RNS-CKKS (insecure parameters, labelled as such)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bt-arith.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+serde.workspace = true
+postcard.workspace = true
+sha2.workspace = true
+zeroize.workspace = true

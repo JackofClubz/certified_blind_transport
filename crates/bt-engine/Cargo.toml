@@ -1,0 +1,19 @@
+[package]
+name = "bt-engine"
+description = "Encrypted one-dimensional optimal-transport matching engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+demo-cheats = []
+
+[dependencies]
+bt-ckks.workspace = true
+bt-mhe.workspace = true
+bt-market.workspace = true
+bt-arith.workspace = true
+serde.workspace = true
+rand_core.workspace = true

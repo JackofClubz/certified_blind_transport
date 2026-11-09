@@ -1,0 +1,171 @@
+# 07. The encrypted matching engine (`bt-engine`)
+
+The engine runs on the server. It takes the firms' encrypted inputs and returns an encrypted trades matrix. v1 computes the **closed-form one-dimensional OT** (`docs/03` §2) under CKKS. v2 adds encrypted Sinkhorn for multi-dimensional problems (§6).
+
+## 1. A simplification: firms pre-compute their own cumulative sums
+
+The closed form needs cumulative volumes D_i, D_{i−1} (Firm A) and S_{j'}, S_{j'−1} (Firm B). Each depends **only on that firm's own orders**, so each firm computes them in plaintext and encrypts them directly, laid out the way the engine needs. Consequences:
+
+- **No homomorphic prefix sums and no rotations.** The server needs only additions, multiplications (for the sign polynomial) and one plaintext mask. The rotation keys disappear (saving about 60 MB of setup traffic); only the relinearisation key is needed.
+- The certificate still checks against the commitments to the **raw** orders a and b (`docs/08`), so a firm that encrypts inconsistent cumulative sums gains nothing it could get past the certificate.
+
+## 2. Slot layout
+
+The grid is L × L = 64 cells. Slot index s = 8·i + j', where i is the bid level (best first) and j' is the ask position counted best first (j' = 0 is the lowest ask price, i.e. ask level j = L−1−j'). Slots 64 … 2047 are zero.
+
+| Ciphertext | Encrypted by | Slot (i, j') holds | Normalisation |
+|---|---|---|---|
+| `D` | Firm A | D_i (cumulative bid volume up to level i) | ÷ 2¹⁹ micro-lots (public bound) |
+| `Dp` | Firm A | D_{i−1} | ÷ 2¹⁹ |
+| `S` | Firm B | S_{j'} (cumulative ask volume, best first) | ÷ 2¹⁹ |
+| `Sp` | Firm B | S_{j'−1} | ÷ 2¹⁹ |
+
+Public plaintext mask: `M[i, j'] = 1` if i + j' ≤ L − 1 (bid price ≥ ask price), else 0; and 0 on slots ≥ 64.
+
+All values lie in [0, 0.77] because total volume ≤ 400,000 < 2¹⁹. Differences lie in [−0.77, 0.77], and are exact multiples of 2⁻¹⁹ before encryption noise (they are integers in micro-lots).
+
+**Batching (later):** 2048 slots hold 32 independent 64-cell markets, so one run can clear 32 instruments at the same cost. This is the batching-versus-decomposition trade-off from your NTT paper, and the natural benchmark for the GPU server (M9).
+
+## 3. The computation
+
+```
+X  = D  − S                       (level unchanged)
+Y  = Dp − Sp
+aX = abs(X)                       (§4: x · sign(x); depth d_s + 1)
+aY = abs(Y)                       (in parallel with aX: same depth)
+mn = (D  + S  − aX) · 0.5         (min(D_i, S_j'))
+mx = (Dp + Sp + aY) · 0.5         (max(D_{i−1}, S_{j'−1}))
+z  = mn − mx
+aZ = abs(z)                       (second layer: depth d_s + 1)
+Tt = (z + aZ) · 0.5               (max(0, z))
+T  = Tt ⊙ M                       (public mask: depth 1)
+output T   (values ÷ 2¹⁹ micro-lots; decrypted values × 2¹⁹ give micro-lots)
+```
+
+The multiplications by 0.5 fold into the next plaintext multiplication or into the encoding scale, so they cost no level. Total depth = 2·(d_s + 1) + 1.
+
+**Sanity check in plaintext:** `bt-market::monotone_coupling` must equal this circuit evaluated in f64 with exact sign. Make that an M5 test.
+
+## 4. Absolute value through a polynomial sign approximation
+
+CKKS can only add and multiply, so sign(x) is approximated by an odd polynomial composition p_k ∘ … ∘ p_1 that maps [−1, −2⁻¹⁹] to ≈ −1 and [2⁻¹⁹, 1] to ≈ +1. Then |x| ≈ x · sign(x). Near 0 the sign may be wrong, but there x itself is tiny, so the error in |x| is at most about 2⁻¹⁹ (and exactly 0 when x = 0, since 0 · anything = 0).
+
+**Inputs are integers in disguise.** Every difference is an integer number of micro-lots, so the sign only needs to be correct for |x| ≥ 2⁻¹⁹. That is the "input precision α = 19" in the literature's terms.
+
+### 4.1 Baseline (used in Spike 5)
+
+```
+f(x) = (3x − x³)/2                applied n times       (depth 2 each)
+h(x) = (15x − 10x³ + 3x⁵)/8       applied 3 times       (depth 3 each)
+```
+
+With n = 16, total d_s ≈ 42. Spike 5 certified 1,001 of 1,001 books at ρ = 0.5%.
+
+### 4.2 Target (M5): optimised composite polynomials
+
+- Cheon, Kim, Kim, Lee, *Efficient Homomorphic Comparison Methods with Optimal Complexity* (ASIACRYPT 2020): the f_n and g_n families. g_n grows fast for small inputs; f_n then sharpens.
+- Lee, Lee, Kim, No, *Minimax approximation of sign function by composite polynomial for homomorphic comparison* (IEEE TDSC; ePrint 2020/834): optimal-depth minimax composites for given input and output precision.
+
+**Expected** d_s ≈ 20–30 for α = 19 and output error ≤ 2⁻²⁰. Confirm by measurement, and update the depth budget.
+
+### 4.3 Evaluating each polynomial
+
+- For low-degree odd polynomials (degree ≤ 7), use direct evaluation in x and x²: depth ⌈log₂(degree)⌉ + 1.
+- For higher degrees, use Paterson–Stockmeyer, or the baby-step giant-step power basis in Chebyshev form (Lattigo `polynomial_evaluator`). That gives depth ⌈log₂(d+1)⌉ with about √(2d) + log d ciphertext multiplications.
+- Precompute the coefficient tables in `bt-engine` as `const` arrays generated by a script (`tools/sign_coeffs.py`, using mpmath and a Remez exchange), and commit the generated file.
+
+## 5. Execution plan: a small circuit with refresh points
+
+Depth is independent of the data, so the server compiles the computation into a **static circuit** before running. Refresh points are inserted at compile time.
+
+```rust
+pub enum Op {
+    Input  { dst: Reg, from: Party, name: &'static str },     // D, Dp, S, Sp
+    Add    { dst: Reg, a: Reg, b: Reg },
+    Sub    { dst: Reg, a: Reg, b: Reg },
+    MulC   { dst: Reg, a: Reg, c: f64 },
+    MulP   { dst: Reg, a: Reg, pt: PlainId },                 // the mask
+    Mul    { dst: Reg, a: Reg, b: Reg },                      // relinearise + rescale
+    Square { dst: Reg, a: Reg },
+    Refresh{ reg: Reg },                                      // suspend: ask the firms for refresh shares
+    Output { reg: Reg },
+}
+pub struct Circuit { pub ops: Vec<Op>, pub depth: usize, pub refreshes: usize }
+
+pub fn compile_v1(sign: &SignSpec, budget: LevelBudget) -> Circuit;   // inserts Refresh before any op that would go below level 1
+```
+
+The server's executor walks `ops`. At a `Refresh`, it yields `NeedRefresh { reg, round }` to the protocol layer, which runs the two-party refresh (`docs/06` §6) and resumes with the refreshed ciphertext.
+
+**Two refresh strategies:**
+- *Lazy:* refresh each register when it reaches level 1. That is simple, but registers on parallel branches (X and Y) trigger separate refreshes.
+- *Batched:* refresh all live registers at the same barrier, sending the firms one request with several c1 polynomials. That means fewer round trips, and is the recommended approach.
+
+**What the UI shows:** the server log lists each `Op` as it executes, with level, measured time and key-switch count, and marks refresh barriers. The level meter is the register's real level. Everything displayed is measured, not modelled.
+
+## 6. v2 research track: encrypted Sinkhorn for multi-dimensional costs
+
+Where there is no closed form, Sinkhorn is the tool. The spikes (`docs/04`, Spikes 2–3) show that naive encrypted Sinkhorn fails at certificate-grade accuracy. These are the questions to work on, with the emulator in `spikes/` as the test bench before touching CKKS.
+
+### 6.1 Target application: a certified encrypted dataset distance
+
+Two institutions hold histograms on a 2-D grid (n₁ × n₂ cells). The cost is separable: C = C₁ ⊕ C₂ (for example squared Euclidean distance), so the kernel is a Kronecker product K = K₁ ⊗ K₂, which is your thesis's structure.
+
+- **Output:** a **certified interval** [dual lower bound, primal upper bound] containing the true OT distance, rather than a point. Moderate ε is acceptable, because the interval's width is honest about the approximation.
+- **Cost advantage:** a Kronecker matrix-vector product needs about 2(√(2n₁) + √(2n₂)) rotations instead of 2√(2n) (`docs/03` and the research report): about 2× fewer key switches and 8× fewer plaintext multiplications at n₁ = n₂ = 32.
+
+### 6.2 Open questions (each a possible paper)
+
+1. **A CKKS-friendly Sinkhorn variant.** Candidates:
+   - log-domain with polynomial log-sum-exp on bounded domains, keeping potentials bounded;
+   - plan-rebalancing (proportional fitting) with firm-supplied reciprocals, an adaptive public reweighting schedule, and safe-start Newton steps (Spike 3 showed the failure modes to avoid);
+   - unbalanced OT with KL penalties, which avoids exact division.
+2. **Warm-started encrypted reciprocals** across iterations: error propagation, and safe initial-guess rules. (Spike 3: naive warm starts diverge.)
+3. **Completeness bound** for the certified interval after rounding and the c-transform, as a function of ε and the number of rounds.
+4. **Kronecker baby-step giant-step with hoisting** on GPU: level-versus-key-switch trade-offs, extending your NTT paper.
+
+### 6.3 Engine interface stays the same
+
+```rust
+pub trait MatchingEngine {
+    fn inputs(&self) -> &[InputSpec];          // what each firm must encrypt, and in what layout
+    fn compile(&self, params: &EngineParams) -> Circuit;
+    fn decode_output(&self, pt: &[f64]) -> Trades;
+}
+pub struct ClosedForm1D { /* v1 */ }
+pub struct SinkhornKron  { /* v2, feature = "sinkhorn" */ }
+```
+
+The UI's "Engine" selector shows v2 as "experimental" until it passes the same certificate tests.
+
+## 7. Performance estimate (`TOY-12`, to be replaced with measurements)
+
+| Item | Estimate |
+|---|---|
+| Ciphertext multiplications per run (baseline sign, two layers, two parallel branches in layer 1) | ≈ 120–200 |
+| One mul + relinearise + rescale, native Rust (N = 2¹², 13 limbs, dnum = 5) | ≈ 2–5 ms (guess; measure in M3) |
+| Same in WebAssembly with SIMD | ≈ 2–3× native |
+| Refreshes per run | ≈ 8 (baseline sign) → ≈ 4 (optimised sign) |
+| Expected end-to-end run in the browser | **a few seconds** |
+
+Record the measured values in `docs/11` §4, and show them live in the UI.
+
+## 8. Cheat hooks (feature `demo-cheats`, used by the UI)
+
+| Hook | What the server does | What catches it (`docs/08`) |
+|---|---|---|
+| `skip_refresh` | Skips one refresh: the ciphertext's level underflows and decryption wraps around | Real: residual range proofs fail or G > δ |
+| `truncate_sign(n)` | Uses fewer sign iterations to save cost, giving wrong min/max | Real: G > δ or a residual goes negative |
+| `tamper_output(c)` | Adds a constant to some trades | Real: same |
+| `steer` | Moves volume between two compatible pairs of different value | Real: G > δ |
+
+Cheats on the firm side live in `bt-protocol` (`docs/08` §7).
+
+## 9. M5 test plan
+
+1. Circuit evaluated in f64 with exact sign equals `monotone_coupling` on 10,000 random books.
+2. Circuit evaluated in f64 with the chosen sign polynomial: certification rate ≥ 99.9% at ρ = 0.5% (extends Spike 5 to 10,000 books).
+3. Circuit evaluated under real CKKS (single-party keys): decrypted trades certify on 1,000 random books; record the error histogram.
+4. Same with two-party keys and refreshes: certify on 200 books (slower).
+5. Every cheat hook causes rejection on every tested book.
+6. Benchmarks: per-op timings and the end-to-end run, native and wasm.

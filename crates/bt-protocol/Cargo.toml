@@ -1,0 +1,27 @@
+[package]
+name = "bt-protocol"
+description = "Session messages, party state machines, and in-process protocol runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["demo-cheats"]
+demo-cheats = ["bt-engine/demo-cheats"]
+
+[dependencies]
+bt-market.workspace = true
+bt-ckks.workspace = true
+bt-mhe.workspace = true
+bt-cert.workspace = true
+bt-engine.workspace = true
+serde.workspace = true
+postcard.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+x25519-dalek.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+zeroize.workspace = true

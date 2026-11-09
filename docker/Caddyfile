@@ -1,0 +1,11 @@
+:80 {
+  root * /srv
+  file_server
+  header {
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'"
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+  }
+  @wasm path *.wasm
+  header @wasm Content-Type application/wasm
+}

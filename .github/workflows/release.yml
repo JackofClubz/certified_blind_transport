@@ -1,0 +1,25 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+          targets: "wasm32-unknown-unknown"
+      - run: cargo build -p bt-wasm --release --target wasm32-unknown-unknown
+      - run: |
+          mkdir -p dist
+          cp target/wasm32-unknown-unknown/release/bt_wasm.wasm dist/
+          sha256sum dist/bt_wasm.wasm | tee dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

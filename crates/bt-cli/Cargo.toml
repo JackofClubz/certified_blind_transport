@@ -1,0 +1,20 @@
+[package]
+name = "bt-cli"
+description = "Native harness, test-vector generation, and benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bt-protocol.workspace = true
+bt-market.workspace = true
+bt-cert.workspace = true
+bt-engine.workspace = true
+bt-ckks.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true
+sha2.workspace = true

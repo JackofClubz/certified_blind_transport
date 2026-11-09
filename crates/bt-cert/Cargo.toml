@@ -1,0 +1,21 @@
+[package]
+name = "bt-cert"
+description = "Pedersen commitments, Bulletproofs, and the clearing-price certificate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bt-market.workspace = true
+bulletproofs.workspace = true
+curve25519-dalek.workspace = true
+merlin.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true

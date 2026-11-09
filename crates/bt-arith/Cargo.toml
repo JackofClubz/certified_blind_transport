@@ -1,0 +1,10 @@
+[package]
+name = "bt-arith"
+description = "Modular arithmetic, NTT-friendly primes and the negacyclic NTT for Certified Blind Transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# none: pure Rust, compiles unchanged to wasm32-unknown-unknown

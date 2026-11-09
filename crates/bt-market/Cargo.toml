@@ -1,0 +1,13 @@
+[package]
+name = "bt-market"
+description = "Market model, closed-form 1-D optimal transport and the clearing-price optimality certificate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# none: exact integer arithmetic, compiles unchanged to wasm32-unknown-unknown
+
+[dev-dependencies]
+bt-arith = { path = "../bt-arith" }   # only for its deterministic test RNG
