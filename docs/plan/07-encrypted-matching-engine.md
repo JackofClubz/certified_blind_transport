@@ -29,22 +29,14 @@ All values lie in [0, 0.77] because total volume ≤ 400,000 < 2¹⁹. Differenc
 ## 3. The computation
 
 ```
-X  = D  − S                       (level unchanged)
-Y  = Dp − Sp
-aX = abs(X)                       (§4: x · sign(x); depth d_s + 1)
-aY = abs(Y)                       (in parallel with aX: same depth)
-mn = (D  + S  − aX) · 0.5         (min(D_i, S_j'))
-mx = (Dp + Sp + aY) · 0.5         (max(D_{i−1}, S_{j'−1}))
-z  = mn − mx
-aZ = abs(z)                       (second layer: depth d_s + 1)
-Tt = (z + aZ) · 0.5               (max(0, z))
-T  = Tt ⊙ M                       (public mask: depth 1)
-output T   (values ÷ 2¹⁹ micro-lots; decrypted values × 2¹⁹ give micro-lots)
+# One-layer interval identity (`docs/M1-market-math.md` §10.1)
+# demand [Dp, D), supply [Sp, S):
+T  = ½( |D−Sp| + |S−Dp| − |D−S| − |Dp−Sp| ) ⊙ M
 ```
 
-The multiplications by 0.5 fold into the next plaintext multiplication or into the encoding scale, so they cost no level. Total depth = 2·(d_s + 1) + 1.
+All four |x| share one multiplicative layer (SIMD). The mask is public. Depth = d_|x| + 1 (plaintext ½). Error |T̂−T*| ≤ 2 ε_|x| per cell.
 
-**Sanity check in plaintext:** `bt-market::monotone_coupling` must equal this circuit evaluated in f64 with exact sign. Make that an M5 test.
+**Sanity check in plaintext:** `bt-market::monotone_coupling` must equal this circuit in f64 with exact |x|.
 
 ## 4. Absolute value through a polynomial sign approximation
 

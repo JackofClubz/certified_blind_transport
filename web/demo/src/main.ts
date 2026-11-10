@@ -45,6 +45,7 @@ type Honesty = {
   ct_commit_binding?: boolean;
   theorem7_kappa_met?: boolean;
   smudge_lambda?: number;
+  refreshes?: number;
   toy_insecure?: boolean;
 };
 
@@ -58,8 +59,9 @@ function honestyTable(h: Honesty): string {
     ["Encryption of inputs", h.real?.some((s) => s.toLowerCase().includes("encryption")) ? "real" : "simulated", "CKKS encrypt of each firm's cumulatives"],
     ["Bulletproofs commit and settle", h.real?.some((s) => s.toLowerCase().includes("bulletproof")) ? "real" : "simulated", "range proofs on committed books"],
     ["Matching computation", h.matching_on_ciphertexts ? "real" : "simulated", h.matching_on_ciphertexts ? "evaluated on ciphertexts" : "plaintext closed form — not the demo claim"],
-    ["Theorem 7 |T̂−T*| < κ=2", h.theorem7_kappa_met ? "met" : "not met", h.theorem7_kappa_met ? "homomorphic error inside κ" : "shallow |x|; a miss aborts (completeness), it does not accept"],
+    ["Theorem 7 |T̂−T*| < κ=2", h.theorem7_kappa_met ? "met" : "not met", h.theorem7_kappa_met ? "one-layer |x| on a long toy chain" : "a miss aborts (completeness), it does not accept"],
     ["Ciphertext–commitment binding", h.ct_commit_binding ? "real" : "simulated", "open research problem for v2"],
+    ["Refreshes", `${h.refreshes ?? 0} × λ = ${h.smudge_lambda ?? "?"}`, "demo uses a long toy chain; refresh is the scale-out story"],
     ["Parameters", h.toy_insecure !== false ? "toy / insecure" : "production", `smudging λ = ${h.smudge_lambda ?? "?"}`],
   ];
   const tr = rows

@@ -439,7 +439,32 @@ Candidates are listed in ascending order, 3987 … 4017:
 | `bitmask_a`, `bitmask_b`, `choose_pi` | §7 | O(L³) total (2L candidates × O(L²)) |
 | `certify_plain` | checks C1–C3 in the clear (test oracle for M2) | O(L²) |
 
-**In the encrypted engine (M5)** the server evaluates the same closed form on ciphertexts. Each firm encrypts its own cumulative sums D, S′ (no rotations needed). The server computes the masked overlap (min(D_i, S′_j) − max(D_{i−1}, S′_{j+1}))⁺ with polynomial approximations of |x| (min(x, y) = (x + y − |x − y|)/2, and x⁺ = (x + |x|)/2). The mask is public, so it costs nothing. This document is what the encrypted circuit must approximate within κ; `bt-market` is its plaintext oracle.
+### 10.1 M5 circuit: one-layer interval overlap
+
+Each cell is the overlap of two half-open intervals: demand `[c₁, d₁) = [D_{i−1}, D_i)` and supply `[c₂, d₂) = [S′_{j+1}, S′_j)`. The nested min/max/ReLU form
+
+```
+T_ij = (min(d₁, d₂) − max(c₁, c₂))⁺
+```
+
+is identical to a linear combination of four absolute values, with **no nesting**:
+
+```
+(min(d₁,d₂) − max(c₁,c₂))⁺  =  ½( |d₁−c₂| + |d₂−c₁| − |d₁−d₂| − |c₁−c₂| ).
+```
+
+Proof: case check on the ordering of the four endpoints (disjoint, overlapping, nested either way). The identity is checked in `bt-engine` on 200,000 random interval pairs and on 20,000 random books against `monotone_coupling`.
+
+Consequences for the encrypted circuit:
+
+- Every term is `|D_x − S′_y|`. For L = 8 there are 53 distinct evaluations; they pack into one SIMD ciphertext at 2048 slots (TOY-12). The N = 128 toy runner evaluates the four SIMD differences in parallel at the same depth.
+- T is then a linear combination with **public** coefficients. The compatibility mask folds into those coefficients and costs no extra multiplicative depth.
+- Multiplicative depth is **one |x| evaluation plus one plaintext multiply**, not three sequential |x| layers.
+- Error: `|T̂ − T*| ≤ 2·ε_|x|` per cell, so Theorem 7 (`κ = 2` micro-lots) needs `ε_|x| < 1` micro-lot. Approximate |x| by `x · p(x)` and measure `||x| − x·p(x)|`, which stays small near zero even when `p` is a poor sign.
+
+The Cheon–Kim–Kim–Lee (ASIACRYPT 2020) polynomials `f₁, f₂, f₃` are the baseline; `g_n` and the Lee et al. minimax composites are the next cut. The demo uses a long toy RNS chain (~50 primes of ~40 bits) so that one `f₃` layer fits without refresh. Refresh (k rounds of threshold decryption at smudging λ) is how a 12-level production chain would host the same circuit; leakage is `k × λ` and belongs on the honesty table.
+
+**In the encrypted engine** the server evaluates this identity on ciphertexts. Each firm encrypts its own cumulative sums D, S′ (no rotations). `bt-market` remains the plaintext oracle; this identity is what M5 must approximate within κ.
 
 ---
 

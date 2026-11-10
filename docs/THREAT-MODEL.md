@@ -29,7 +29,8 @@ Status: living document for the toy in-browser demo. Parameters are **insecure**
 - Smudging λ is the value shown on the page (11 bits at the documented toy target; `docs/plan/06` §5.1).
 - Ciphertext-to-commitment binding is **simulated** (demo oracle).
 - Homomorphic multiply uses a toy key-switch (gadget = `s'`, not `P·s'`). Do not cite this as Han–Ki hybrid KS.
-- The matching circuit is on ciphertexts, but the shallow `|x|` (`n_cubic = 1`) misses Theorem 7 (`κ = 2`). Honest runs abort on the gap/settle checks. That is a completeness failure, not a soundness hole. Hitting `κ` needs more comparison depth plus refresh, a larger `Δ`, or a coarser unit.
+- Matching uses a long toy RNS chain (not a production 12-level parameter). Interactive refresh is not on the critical path; the honesty table reports `refreshes: 0 × λ`.
+- Do not enlarge κ to hide |x| error: δ grows linearly with κ and the certificate becomes meaningless.
 - No proofs of well-formedness of key-generation or refresh shares.
 - Firm-to-firm X25519 is unauthenticated (no PKI in the demo).
 - Gaussian sampler is not constant-time.

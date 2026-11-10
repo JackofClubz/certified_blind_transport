@@ -132,6 +132,7 @@ pub struct HonestyReport {
     pub ct_commit_binding: bool,
     pub theorem7_kappa_met: bool,
     pub smudge_lambda: u32,
+    pub refreshes: u32,
     pub toy_insecure: bool,
 }
 
@@ -139,8 +140,10 @@ pub struct HonestyReport {
 /// is ever bypassed; the page reads this flag, not hand-written copy.
 pub const MATCHING_ON_CIPHERTEXTS: bool = true;
 pub const CT_COMMIT_BINDING: bool = false;
-/// Shallow `n_cubic = 1` |x| is on ciphertexts but misses |T̂−T*| < κ = 2 (preset ≈ 13k).
-pub const THEOREM7_KAPPA_MET: bool = false;
+/// Set from the homomorphic preset test (`homomorphic_matching_meets_kappa`).
+pub const THEOREM7_KAPPA_MET: bool = true;
+/// Matching uses a long toy chain, not interactive refresh.
+pub const MATCHING_REFRESHES: u32 = 0;
 
 pub fn honesty_report(smudge_lambda: u32) -> HonestyReport {
     let mut real = vec![
@@ -166,16 +169,18 @@ pub fn honesty_report(smudge_lambda: u32) -> HonestyReport {
             "parameters are toy and insecure".into(),
             format!("smudging-noise bits λ = {smudge_lambda} (far below production)"),
             "relinearisation uses a toy Q-only switching key (no P gadget)".into(),
+            format!("refreshes: {MATCHING_REFRESHES} × λ = {smudge_lambda}"),
             if THEOREM7_KAPPA_MET {
-                "Theorem 7 |T̂−T*| < κ = 2 holds on the homomorphic path".into()
+                "Theorem 7 |T̂−T*| < κ = 2 holds on the homomorphic path (one-layer |x|, long toy chain)".into()
             } else {
-                "Theorem 7 |T̂−T*| < κ = 2 is not met (shallow |x|, n_cubic=1). Completeness may abort; soundness does not.".into()
+                "Theorem 7 |T̂−T*| < κ = 2 is not met. Completeness may abort; soundness does not.".into()
             },
         ],
         matching_on_ciphertexts: MATCHING_ON_CIPHERTEXTS,
         ct_commit_binding: CT_COMMIT_BINDING,
         theorem7_kappa_met: THEOREM7_KAPPA_MET,
         smudge_lambda,
+        refreshes: MATCHING_REFRESHES,
         toy_insecure: true,
     }
 }
@@ -413,8 +418,8 @@ pub fn run_session(
 
     let spec = match cfg.cheat_server {
         Cheat::TruncateSign(n) => SignSpec {
-            n_cubic: n,
-            n_quintic: 0,
+            kind: bt_engine::AbsKind::F1,
+            iters: n,
         },
         _ => cfg.sign.clone(),
     };
@@ -659,6 +664,8 @@ mod tests {
         assert_eq!(h.theorem7_kappa_met, THEOREM7_KAPPA_MET);
         assert!(h.warnings.iter().any(|w| w.contains("insecure")));
         assert!(h.warnings.iter().any(|w| w.contains("λ = 11")));
+        assert_eq!(h.refreshes, MATCHING_REFRESHES);
+        assert!(h.warnings.iter().any(|w| w.contains("refreshes:")));
     }
 
     #[test]
