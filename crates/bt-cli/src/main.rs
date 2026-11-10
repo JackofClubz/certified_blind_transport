@@ -42,6 +42,13 @@ fn main() {
                 res.messages.len(),
                 res.bytes_total
             );
+            println!(
+                "honesty real={:?} simulated={:?} warnings={:?}",
+                res.honesty.real, res.honesty.simulated, res.honesty.warnings
+            );
+            for (name, us) in &res.timings_us {
+                println!("  timing {name}: {us} us");
+            }
             for c in &res.verdict.checks {
                 println!("  check {}: {:?} {}", c.id, c.status, c.label);
             }

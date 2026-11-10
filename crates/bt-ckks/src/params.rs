@@ -27,15 +27,17 @@ impl Params {
         }
     }
 
-    /// Tiny set for unit tests (still labelled toy).
+    /// Tiny set for unit tests and the in-browser toy run (still labelled insecure).
+    /// `dnum = 1` makes hybrid key-switching a single gadget `P·s'` (correctness first).
+    /// Extra scaling primes cover two shallow `|x|` layers plus a public mask.
     pub fn toy_test() -> Self {
         Self {
             n_log: 7, // N = 128, 64 slots (one 8×8 market)
             q0_bits: 50,
             q_bits: 40,
-            levels: 6,
+            levels: 18,
             p_count: 2,
-            dnum: 2,
+            dnum: 1,
             sigma_bits: 0,
         }
     }

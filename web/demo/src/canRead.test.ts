@@ -11,4 +11,8 @@ describe("canRead", () => {
     expect(canRead("Public", "ordersA")).toBe(false);
     expect(canRead("Public", "trades")).toBe(true);
   });
+  it("firm A does not see B's book", () => {
+    expect(canRead("A", "ordersB")).toBe(false);
+    expect(canRead("A", "ordersA")).toBe(true);
+  });
 });

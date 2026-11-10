@@ -29,6 +29,18 @@ pub fn encode(ctx: &Context, z: &[f64], level: usize, scale: f64) -> (RnsPoly, u
     (p, level, scale)
 }
 
+/// Constant polynomial `m(X) = round(c·Δ)`. Evaluates to `c` in every slot.
+pub fn encode_const(ctx: &Context, c: f64, level: usize, scale: f64) -> (RnsPoly, usize, f64) {
+    let n = ctx.n();
+    let mut coeffs = vec![0i64; n];
+    coeffs[0] = (c * scale).round() as i64;
+    let limbs = ctx.q_limbs(level);
+    let mut p = poly_from_i64(ctx, &coeffs, limbs);
+    let basis = ctx.basis_q_level(level);
+    p.ntt(&basis);
+    (p, level, scale)
+}
+
 pub fn decode(ctx: &Context, poly: &RnsPoly, level: usize, scale: f64) -> Vec<f64> {
     let n = ctx.n();
     let slots = ctx.slots();

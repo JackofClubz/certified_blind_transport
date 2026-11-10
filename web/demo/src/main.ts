@@ -37,16 +37,52 @@ async function loadWasm() {
   }
 }
 
+type Honesty = {
+  real?: string[];
+  simulated?: string[];
+  warnings?: string[];
+  matching_on_ciphertexts?: boolean;
+  ct_commit_binding?: boolean;
+  theorem7_kappa_met?: boolean;
+  smudge_lambda?: number;
+  toy_insecure?: boolean;
+};
+
+function honestyFrom(info: Record<string, unknown>): Honesty {
+  const h = (info.honesty ?? {}) as Honesty;
+  return h;
+}
+
+function honestyTable(h: Honesty): string {
+  const rows: [string, string, string][] = [
+    ["Encryption of inputs", h.real?.some((s) => s.toLowerCase().includes("encryption")) ? "real" : "simulated", "CKKS encrypt of each firm's cumulatives"],
+    ["Bulletproofs commit and settle", h.real?.some((s) => s.toLowerCase().includes("bulletproof")) ? "real" : "simulated", "range proofs on committed books"],
+    ["Matching computation", h.matching_on_ciphertexts ? "real" : "simulated", h.matching_on_ciphertexts ? "evaluated on ciphertexts" : "plaintext closed form — not the demo claim"],
+    ["Theorem 7 |T̂−T*| < κ=2", h.theorem7_kappa_met ? "met" : "not met", h.theorem7_kappa_met ? "homomorphic error inside κ" : "shallow |x|; a miss aborts (completeness), it does not accept"],
+    ["Ciphertext–commitment binding", h.ct_commit_binding ? "real" : "simulated", "open research problem for v2"],
+    ["Parameters", h.toy_insecure !== false ? "toy / insecure" : "production", `smudging λ = ${h.smudge_lambda ?? "?"}`],
+  ];
+  const tr = rows
+    .map(
+      ([k, status, note]) =>
+        `<tr><th>${k}</th><td class="${status.includes("insecure") || status === "simulated" ? "fail" : ""}">${status}</td><td>${note}</td></tr>`
+    )
+    .join("");
+  const warn = (h.warnings ?? []).map((w) => `<li>${w}</li>`).join("");
+  return `<div class="honesty">
+      <strong>Honesty box</strong> (generated from code flags, not hand-written).
+      <table>${tr}</table>
+      <ul>${warn}</ul>
+    </div>`;
+}
+
 function render() {
-  const info = (window as unknown as { cbt?: { info: () => unknown } }).cbt?.info() ?? {};
+  const info = ((window as unknown as { cbt?: { info: () => unknown } }).cbt?.info() ?? {}) as Record<string, unknown>;
+  const h = honestyFrom(info);
   root.innerHTML = `
     <h1>Certified Blind Transport</h1>
-    <p>Two rival firms match encrypted books. The server is never trusted: a clearing-price certificate checks optimality.</p>
-    <div class="honesty">
-      <strong>Honesty box.</strong> Real: commitments, range proofs, optimality certificate, message log.
-      Simulated: ciphertext-to-commitment binding (open research problem).
-      Parameters: <span class="fail">TOY-12, insecure</span>. Smudging λ is far below production.
-    </div>
+    <p>Two rival firms encrypt their books. A clearing-price certificate checks optimality of whatever trades come back. Parameters are toy.</p>
+    ${honestyTable(h)}
     <p class="muted">Build: <code>${JSON.stringify(info)}</code></p>
     <div class="grid">
       <div class="panel">
@@ -72,7 +108,7 @@ function render() {
         </div>
         <div class="panel">
           <h2>Verify this build</h2>
-          <p>Parameters: TOY-12 (N = 4096, log QP ≈ 840): <span class="fail">insecure, demonstration only</span>.</p>
+          <p>Parameters: toy RNS-CKKS: <span class="fail">insecure, demonstration only</span>. Smudging λ is shown in the honesty box.</p>
           <pre>git clone … && docker build -f docker/build.Dockerfile -t cbt-build .
 docker run --rm -v "$PWD":/src -w /src cbt-build just wasm
 sha256sum web/demo/src/pkg/bt_wasm_bg.wasm</pre>
@@ -115,7 +151,7 @@ function drawLadder() {
 
 async function run() {
   const readout = document.getElementById("readout")!;
-  readout.textContent = "Running protocol (toy, insecure)…";
+  readout.textContent = "Running protocol on ciphertexts (toy, insecure)…";
   const a = books.a.map((x) => x * 1000);
   const b = books.b.map((x) => x * 1000);
   let payload: Record<string, unknown>;
@@ -136,9 +172,13 @@ async function run() {
   document.getElementById("net")!.innerHTML = bus.log
     .map((e) => `${e.seq} ${e.from}→${e.to} ${e.kind} ${e.bytes}B ${e.sha256}`)
     .join("<br/>");
+  const timings = payload.timings_us as [string, number][] | undefined;
+  const timingLine = timings?.length
+    ? " Steps: " + timings.map(([n, us]) => `${n} ${(us / 1000).toFixed(0)}ms`).join(", ") + "."
+    : "";
   readout.textContent = payload.accepted
-    ? "Every real check passed (or wasm stub). Clearing price certifies the committed books."
-    : "Certificate rejected.";
+    ? "Certificate accepted on the committed books." + timingLine
+    : "Certificate rejected (a miss on precision aborts; it does not silently accept)." + timingLine;
 }
 
 void loadWasm().then(render);

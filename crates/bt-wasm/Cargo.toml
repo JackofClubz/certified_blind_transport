@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bt-protocol.workspace = true
+bt-engine.workspace = true
 bt-ckks.workspace = true
 bt-cert.workspace = true
 wasm-bindgen.workspace = true
@@ -22,5 +23,7 @@ getrandom = { version = "0.2", features = ["js"] }
 sha2.workspace = true
 serde_json.workspace = true
 postcard.workspace = true
-rand_chacha.workspace = true
 rand_core.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

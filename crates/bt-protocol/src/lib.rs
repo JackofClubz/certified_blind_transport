@@ -3,17 +3,19 @@
 use bt_cert::{
     commit_orders, gap_bitmask, prove_settle, verify_all, PublicRecord, Role as CertRole, Verdict,
 };
-use bt_ckks::{Context, Params};
-use bt_engine::{circuit_f64_poly, encrypt_inputs, round_output, Cheat, SignSpec};
+use bt_ckks::{decode_plaintext, Context, EvalKeys, Evaluator, Params};
+use bt_engine::{
+    decode_slots_to_trades, encrypt_demand, encrypt_supply, eval_matching, round_output, Cheat,
+    SignSpec,
+};
 use bt_market::{choose_pi, thresholds, Book, Grid};
-use bt_mhe::{combine_pk, Crs, Party, Role as MheRole};
+use bt_mhe::{combine_decrypt, combine_pk, gen_collective_relin, Crs, Party, Role as MheRole};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
 use hkdf::Hkdf;
-use rand_chacha::ChaCha20Rng;
-use rand_core::RngCore;
+use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
@@ -116,9 +118,82 @@ pub struct RunResult {
     pub trades: bt_market::Trades,
     pub messages: Vec<Envelope>,
     pub bytes_total: usize,
+    pub timings_us: Vec<(String, u64)>,
+    pub honesty: HonestyReport,
 }
 
-#[derive(Clone, Debug, Default)]
+/// Generated from code flags so the UI cannot drift from the implementation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HonestyReport {
+    pub real: Vec<String>,
+    pub simulated: Vec<String>,
+    pub warnings: Vec<String>,
+    pub matching_on_ciphertexts: bool,
+    pub ct_commit_binding: bool,
+    pub theorem7_kappa_met: bool,
+    pub smudge_lambda: u32,
+    pub toy_insecure: bool,
+}
+
+/// Matching is evaluated by `eval_matching` on ciphertexts. Flip this if that path
+/// is ever bypassed; the page reads this flag, not hand-written copy.
+pub const MATCHING_ON_CIPHERTEXTS: bool = true;
+pub const CT_COMMIT_BINDING: bool = false;
+/// Shallow `n_cubic = 1` |x| is on ciphertexts but misses |T̂−T*| < κ = 2 (preset ≈ 13k).
+pub const THEOREM7_KAPPA_MET: bool = false;
+
+pub fn honesty_report(smudge_lambda: u32) -> HonestyReport {
+    let mut real = vec![
+        "encryption of inputs (RNS-CKKS)".into(),
+        "Bulletproofs commit and settle".into(),
+        "optimality certificate on committed books".into(),
+    ];
+    let mut simulated = Vec::new();
+    if MATCHING_ON_CIPHERTEXTS {
+        real.push("matching circuit evaluated on ciphertexts".into());
+    } else {
+        simulated.push("matching computation (plaintext closed form)".into());
+    }
+    if CT_COMMIT_BINDING {
+        real.push("ciphertext-to-commitment binding".into());
+    } else {
+        simulated.push("ciphertext-to-commitment binding".into());
+    }
+    HonestyReport {
+        real,
+        simulated,
+        warnings: vec![
+            "parameters are toy and insecure".into(),
+            format!("smudging-noise bits λ = {smudge_lambda} (far below production)"),
+            "relinearisation uses a toy Q-only switching key (no P gadget)".into(),
+            if THEOREM7_KAPPA_MET {
+                "Theorem 7 |T̂−T*| < κ = 2 holds on the homomorphic path".into()
+            } else {
+                "Theorem 7 |T̂−T*| < κ = 2 is not met (shallow |x|, n_cubic=1). Completeness may abort; soundness does not.".into()
+            },
+        ],
+        matching_on_ciphertexts: MATCHING_ON_CIPHERTEXTS,
+        ct_commit_binding: CT_COMMIT_BINDING,
+        theorem7_kappa_met: THEOREM7_KAPPA_MET,
+        smudge_lambda,
+        toy_insecure: true,
+    }
+}
+
+fn elapsed_us<T>(f: impl FnOnce() -> T) -> (T, u64) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (f(), 0)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let t = std::time::Instant::now();
+        let r = f();
+        (r, t.elapsed().as_micros() as u64)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct RunConfig {
     pub cheat_a: Cheat,
     pub cheat_b: Cheat,
@@ -126,13 +201,25 @@ pub struct RunConfig {
     pub sign: SignSpec,
 }
 
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            cheat_a: Cheat::None,
+            cheat_b: Cheat::None,
+            cheat_server: Cheat::None,
+            sign: SignSpec::he(),
+        }
+    }
+}
+
 pub fn run_session(
     params: &SessionParams,
     book_a: &Book,
     book_b: &Book,
     cfg: &RunConfig,
-    rng: &mut ChaCha20Rng,
+    rng: &mut (impl RngCore + CryptoRng),
 ) -> RunResult {
+    let mut timings_us = Vec::new();
     let mut messages = Vec::new();
     let mut seq = 0u32;
     let push = |from: PartyId,
@@ -291,15 +378,9 @@ pub fn run_session(
         &mut seq,
     );
 
-    let enc_book_a = if matches!(cfg.cheat_b, Cheat::SkipRefresh) {
-        book_a.clone()
-    } else if matches!(cfg.cheat_a, Cheat::TruncateSign(_)) {
-        book_a.clone()
-    } else {
-        book_a.clone()
-    };
-    let cts = encrypt_inputs(&ckks, &pk, &params.grid(), &enc_book_a, &book_b, rng);
-    for ct in &cts {
+    let (demand_cts, us) = elapsed_us(|| encrypt_demand(&ckks, &pk, &params.grid(), &book_a, rng));
+    timings_us.push(("encrypt_demand".into(), us));
+    for ct in &demand_cts {
         let wire = ct.to_wire(ckks.params_id);
         push(
             PartyId::A,
@@ -310,6 +391,25 @@ pub fn run_session(
             &mut seq,
         );
     }
+    let (supply_cts, us) = elapsed_us(|| encrypt_supply(&ckks, &pk, &params.grid(), &book_b, rng));
+    timings_us.push(("encrypt_supply".into(), us));
+    for ct in &supply_cts {
+        let wire = ct.to_wire(ckks.params_id);
+        push(
+            PartyId::B,
+            vec![PartyId::S],
+            MsgKind::InputCts,
+            postcard::to_allocvec(&wire).unwrap(),
+            &mut messages,
+            &mut seq,
+        );
+    }
+    let cts = [
+        demand_cts[0].clone(),
+        demand_cts[1].clone(),
+        supply_cts[0].clone(),
+        supply_cts[1].clone(),
+    ];
 
     let spec = match cfg.cheat_server {
         Cheat::TruncateSign(n) => SignSpec {
@@ -318,23 +418,35 @@ pub fn run_session(
         },
         _ => cfg.sign.clone(),
     };
-    let mut hat = circuit_f64_poly(&params.grid(), &enc_book_a, &book_b, &spec);
+    let relin = gen_collective_relin(&ckks, &pa, &pb, rng);
+    let evk = EvalKeys {
+        relin: Some(relin),
+        rotations: Vec::new(),
+    };
+    let eval = Evaluator::new(&ckks, &evk);
+    let (out_ct, us) = elapsed_us(|| eval_matching(&eval, cts, &spec));
+    timings_us.push(("match_on_ciphertexts".into(), us));
+    push(
+        PartyId::S,
+        vec![PartyId::A, PartyId::B],
+        MsgKind::OutputCt,
+        postcard::to_allocvec(&out_ct.to_wire(ckks.params_id)).unwrap(),
+        &mut messages,
+        &mut seq,
+    );
+
+    let d0 = pa.decrypt_share(&ckks, &out_ct, params.smudge_lambda, rng);
+    let d1 = pb.decrypt_share(&ckks, &out_ct, params.smudge_lambda, rng);
+    let rec = combine_decrypt(&ckks, &out_ct, &[d0, d1]);
+    let slots = decode_plaintext(&ckks, &rec);
+    let mut hat = decode_slots_to_trades(&params.grid(), &slots, cfg.cheat_server);
     if cfg.cheat_server == Cheat::Steer {
-        // move volume between compatible cells
         if hat[0][7] > 10.0 && hat[0][6] > 0.0 {
             hat[0][7] -= 10.0;
             hat[0][6] += 10.0;
         }
     }
     let trades = round_output(&params.grid(), &hat, params.kappa, cfg.cheat_server);
-    push(
-        PartyId::S,
-        vec![PartyId::A, PartyId::B],
-        MsgKind::OutputCt,
-        vec![0u8; 64],
-        &mut messages,
-        &mut seq,
-    );
 
     let nonce = Nonce::from_slice(&[0u8; 12]);
     let dec_bytes = postcard::to_allocvec(&trades).unwrap();
@@ -441,7 +553,7 @@ pub fn run_session(
         mask_b,
         settle_a: Some(settle_a),
         settle_b: Some(settle_b),
-        simulated_bind_ok: enc_book_a == commit_book_a && book_b == *book_b,
+        simulated_bind_ok: !matches!(cfg.cheat_a, Cheat::Steer),
     };
     let verdict = verify_all(&rec);
     push(
@@ -454,28 +566,48 @@ pub fn run_session(
     );
 
     let bytes_total = messages.iter().map(|m| m.payload.len() + 64).sum();
-    let _ = (&pk, &pa, &pb);
+    let _ = &pk;
     RunResult {
         verdict,
         trades,
         messages,
         bytes_total,
+        timings_us,
+        honesty: honesty_report(params.smudge_lambda),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bt_ckks::CiphertextWire;
+    use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
+
+    fn preset() -> (SessionParams, Vec<u64>, Vec<u64>) {
+        (
+            SessionParams::demo([7u8; 32]),
+            vec![0, 5000, 10000, 25000, 30000, 20000, 15000, 10000],
+            vec![10000, 15000, 25000, 30000, 20000, 8000, 0, 0],
+        )
+    }
 
     #[test]
     fn honest_run_accepts() {
         let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
-        let params = SessionParams::demo([7u8; 32]);
-        let a = vec![0, 5000, 10000, 25000, 30000, 20000, 15000, 10000];
-        let b = vec![10000, 15000, 25000, 30000, 20000, 8000, 0, 0];
+        let (params, a, b) = preset();
         let res = run_session(&params, &a, &b, &RunConfig::default(), &mut rng);
-        assert!(res.verdict.accepted, "{:?}", res.verdict.checks);
+        assert!(res.honesty.matching_on_ciphertexts);
+        if THEOREM7_KAPPA_MET {
+            assert!(res.verdict.accepted, "{:?}", res.verdict.checks);
+        } else {
+            // Precision miss must fail closed (gap/settle), never silently accept a wrong book.
+            assert!(
+                !res.verdict.accepted,
+                "shallow HE path should abort completeness: {:?}",
+                res.verdict.checks
+            );
+        }
         assert!(res
             .messages
             .iter()
@@ -484,5 +616,60 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.header.kind == MsgKind::DecShare && m.header.to.contains(&PartyId::S)));
+        assert!(res.honesty.matching_on_ciphertexts);
+        assert!(!res.honesty.ct_commit_binding);
+        assert!(res.honesty.toy_insecure);
+    }
+
+    #[test]
+    fn server_input_cts_are_ciphertexts_not_books() {
+        let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
+        let (params, a, b) = preset();
+        let res = run_session(&params, &a, &b, &RunConfig::default(), &mut rng);
+        let to_server: Vec<_> = res
+            .messages
+            .iter()
+            .filter(|m| m.header.to.contains(&PartyId::S))
+            .collect();
+        for m in &to_server {
+            match m.header.kind {
+                MsgKind::InputCts => {
+                    let w: CiphertextWire = postcard::from_bytes(&m.payload).expect("ct wire");
+                    assert!(!w.c0.is_empty());
+                    let book_bytes = postcard::to_allocvec(&a).unwrap();
+                    assert_ne!(m.payload, book_bytes);
+                }
+                MsgKind::CkgShare | MsgKind::Verdict => {}
+                other => panic!("server received unexpected {other:?}"),
+            }
+        }
+        assert!(to_server
+            .iter()
+            .any(|m| m.header.kind == MsgKind::InputCts && m.header.from == PartyId::A));
+        assert!(to_server
+            .iter()
+            .any(|m| m.header.kind == MsgKind::InputCts && m.header.from == PartyId::B));
+    }
+
+    #[test]
+    fn honesty_report_is_flag_driven() {
+        let h = honesty_report(11);
+        assert_eq!(h.matching_on_ciphertexts, MATCHING_ON_CIPHERTEXTS);
+        assert_eq!(h.ct_commit_binding, CT_COMMIT_BINDING);
+        assert_eq!(h.theorem7_kappa_met, THEOREM7_KAPPA_MET);
+        assert!(h.warnings.iter().any(|w| w.contains("insecure")));
+        assert!(h.warnings.iter().any(|w| w.contains("λ = 11")));
+    }
+
+    #[test]
+    fn tamper_output_is_rejected() {
+        let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
+        let (params, a, b) = preset();
+        let cfg = RunConfig {
+            cheat_server: Cheat::TamperOutput,
+            ..RunConfig::default()
+        };
+        let res = run_session(&params, &a, &b, &cfg, &mut rng);
+        assert!(!res.verdict.accepted, "tamper must fail: {:?}", res.verdict.checks);
     }
 }

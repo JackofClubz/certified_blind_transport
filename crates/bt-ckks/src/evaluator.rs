@@ -1,8 +1,8 @@
 use bt_arith::modops::{inv_mod_prime, mul_mod, sub_mod};
-use bt_arith::rns::{center_lift, mod_down, mod_up, signed_to_mod, Basis, RnsPoly};
+use bt_arith::rns::{center_lift, signed_to_mod, Basis, RnsPoly};
 
 use crate::context::Context;
-use crate::encoder::encode;
+use crate::encoder::{encode, encode_const};
 use crate::poly::clone_limbs;
 use crate::types::{Ciphertext, EvalKeys, SwitchingKey};
 
@@ -47,7 +47,7 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn add_const(&self, a: &Ciphertext, c: f64) -> Ciphertext {
-        let (poly, _, _) = encode(self.ctx, &[c], a.level, a.scale);
+        let (poly, _, _) = encode_const(self.ctx, c, a.level, a.scale);
         let basis = self.ctx.basis_q_level(a.level);
         let mut c0 = a.c0.clone();
         c0.add_assign(&poly, &basis);
@@ -59,8 +59,44 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// Multiply by a small integer; scale is unchanged.
+    pub fn mul_int(&self, a: &Ciphertext, k: i64) -> Ciphertext {
+        let basis = self.ctx.basis_q_level(a.level);
+        let mut c0 = a.c0.clone();
+        let mut c1 = a.c1.clone();
+        c0.mul_scalar(k, &basis);
+        c1.mul_scalar(k, &basis);
+        Ciphertext {
+            c0,
+            c1,
+            level: a.level,
+            scale: a.scale,
+        }
+    }
+
     pub fn mul_const(&self, a: &Ciphertext, c: f64) -> Ciphertext {
-        self.mul_plain(a, &[c])
+        let q_ell = self.ctx.q_at(a.level.max(1));
+        let scale_pt = if a.level == 0 {
+            a.scale
+        } else {
+            q_ell as f64
+        };
+        let (pt, _, _) = encode_const(self.ctx, c, a.level, scale_pt);
+        let basis = self.ctx.basis_q_level(a.level);
+        let mut c0 = a.c0.clone();
+        let mut c1 = a.c1.clone();
+        c0.mul_assign_ntt(&pt, &basis);
+        c1.mul_assign_ntt(&pt, &basis);
+        let mut out = Ciphertext {
+            c0,
+            c1,
+            level: a.level,
+            scale: a.scale * scale_pt,
+        };
+        if out.level > 0 {
+            self.rescale(&mut out);
+        }
+        out
     }
 
     pub fn mul_plain(&self, a: &Ciphertext, z: &[f64]) -> Ciphertext {
@@ -163,13 +199,8 @@ fn rescale_poly(p: &mut RnsPoly, basis: &Basis, last: usize, q_ell: u64) {
     let mut last_limb = p.limbs[last].clone();
     basis.table(last).inverse(&mut last_limb);
     // centre-lift with round-to-nearest
-    let lifted: Vec<i64> = last_limb
-        .iter()
-        .map(|&x| {
-            let y = x.saturating_add(q_ell / 2);
-            center_lift(y % q_ell, q_ell)
-        })
-        .collect();
+    // Last limb is already `c mod q_ℓ`. Centre-lift to `(-q/2, q/2]`.
+    let lifted: Vec<i64> = last_limb.iter().map(|&x| center_lift(x, q_ell)).collect();
     for j in 0..last {
         let qj = basis.moduli[j];
         let inv = inv_mod_prime(q_ell % qj, qj);
@@ -186,7 +217,11 @@ fn rescale_poly(p: &mut RnsPoly, basis: &Basis, last: usize, q_ell: u64) {
     p.limbs.truncate(last);
 }
 
-/// Key-switch `d` (NTT, Q_ℓ) from s' to s using a hybrid switching key.
+/// Key-switch `d` (NTT, Q_ℓ) from s' to s.
+///
+/// Toy path: the switching key is `(-as+e+s', a)` and the product is taken in Q.
+/// This is correct when the key-switch error `d·e` stays smaller than q0/2Δ, which
+/// the toy `dnum=1` parameters do not guarantee for a `P`-gadget (that product wraps).
 pub fn key_switch(
     ctx: &Context,
     d: &RnsPoly,
@@ -195,42 +230,14 @@ pub fn key_switch(
 ) -> (RnsPoly, RnsPoly) {
     let ql = ctx.q_limbs(level);
     let q_basis = ctx.basis_q_level(level);
-    let mut d_c = d.clone();
-    if d_c.ntt_form {
-        d_c.intt(&q_basis);
-    }
-    let up = mod_up(&d_c, &q_basis, &ctx.p_basis);
-    let mut qp_moduli = ctx.q_moduli[..=level].to_vec();
-    qp_moduli.extend_from_slice(&ctx.p_moduli);
-    let qp_basis = Basis::new(qp_moduli, ctx.n());
-    let mut up_ntt = up;
-    up_ntt.ntt(&qp_basis);
-
     let (k0, k1) = &ksk.digits[0];
-    let k0t = restrict_qp(k0, ctx, level);
-    let k1t = restrict_qp(k1, ctx, level);
-    let mut t0 = up_ntt.clone();
-    t0.mul_assign_ntt(&k0t, &qp_basis);
-    let mut t1 = up_ntt;
-    t1.mul_assign_ntt(&k1t, &qp_basis);
-    t0.intt(&qp_basis);
-    t1.intt(&qp_basis);
-    let mut k0o = mod_down(&t0, &q_basis, &ctx.p_basis);
-    let mut k1o = mod_down(&t1, &q_basis, &ctx.p_basis);
-    k0o.ntt(&q_basis);
-    k1o.ntt(&q_basis);
-    let _ = ql;
-    (k0o, k1o)
-}
-
-fn restrict_qp(p: &RnsPoly, ctx: &Context, level: usize) -> RnsPoly {
-    let mut limbs = p.limbs[..=level].to_vec();
-    let p_off = ctx.q_moduli.len();
-    limbs.extend_from_slice(&p.limbs[p_off..]);
-    RnsPoly {
-        limbs,
-        ntt_form: p.ntt_form,
-    }
+    let k0t = clone_limbs(k0, ql);
+    let k1t = clone_limbs(k1, ql);
+    let mut t0 = d.clone();
+    t0.mul_assign_ntt(&k0t, &q_basis);
+    let mut t1 = d.clone();
+    t1.mul_assign_ntt(&k1t, &q_basis);
+    (t0, t1)
 }
 
 /// Rotate slots by `k` using automorphism + key switch.

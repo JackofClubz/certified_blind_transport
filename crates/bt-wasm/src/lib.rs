@@ -1,5 +1,35 @@
-use bt_protocol::{decode_msg, run_session, RunConfig, SessionParams};
+use bt_engine::Cheat;
+use bt_protocol::{decode_msg, honesty_report, run_session, RunConfig, SessionParams};
+use rand_core::{CryptoRng, RngCore};
 use wasm_bindgen::prelude::*;
+
+/// OS / browser CSPRNG. Demo crypto must not use a seeded test RNG.
+struct OsFill;
+
+impl CryptoRng for OsFill {}
+
+impl RngCore for OsFill {
+    fn next_u32(&mut self) -> u32 {
+        let mut b = [0u8; 4];
+        self.fill_bytes(&mut b);
+        u32::from_le_bytes(b)
+    }
+    fn next_u64(&mut self) -> u64 {
+        let mut b = [0u8; 8];
+        self.fill_bytes(&mut b);
+        u64::from_le_bytes(b)
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        getrandom::getrandom(dest).expect("OS/browser RNG");
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        getrandom::getrandom(dest).map_err(|e| {
+            let code = std::num::NonZeroU32::new(1).unwrap();
+            let _ = e;
+            rand_core::Error::from(code)
+        })
+    }
+}
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -20,6 +50,8 @@ pub fn info() -> JsValue {
             "log_qp_approx": 840,
         },
         "security": params.security_label(),
+        "honesty": honesty_report(11),
+        "smudge_lambda": 11,
     });
     serde_wasm_bindgen::to_value(&v).unwrap_or(JsValue::NULL)
 }
@@ -125,10 +157,13 @@ pub fn decode_header(msg: &[u8]) -> JsValue {
 }
 
 #[wasm_bindgen]
+pub fn honesty() -> JsValue {
+    serde_wasm_bindgen::to_value(&honesty_report(11)).unwrap_or(JsValue::NULL)
+}
+
+#[wasm_bindgen]
 pub fn run_demo(book_a: &[u64], book_b: &[u64]) -> JsValue {
-    use rand_chacha::ChaCha20Rng;
-    use rand_core::SeedableRng;
-    let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+    let mut rng = OsFill;
     let params = SessionParams::demo([7u8; 32]);
     let a = if book_a.len() == 8 {
         book_a.to_vec()
@@ -151,6 +186,55 @@ pub fn run_demo(book_a: &[u64], book_b: &[u64]) -> JsValue {
         "messages": res.messages.len(),
         "bytes": res.bytes_total,
         "security": "toy, insecure",
+        "honesty": res.honesty,
+        "timings_us": res.timings_us,
+        "smudge_lambda": params.smudge_lambda,
+        "toy": true,
     });
     serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+}
+
+#[wasm_bindgen]
+pub fn run_demo_cheat(book_a: &[u64], book_b: &[u64], cheat: &str) -> JsValue {
+    let mut rng = OsFill;
+    let params = SessionParams::demo([7u8; 32]);
+    let a = book_a.to_vec();
+    let b = book_b.to_vec();
+    let mut cfg = RunConfig::default();
+    match cheat {
+        "steer" => cfg.cheat_a = Cheat::Steer,
+        "tamper" => cfg.cheat_server = Cheat::TamperOutput,
+        "truncate" => cfg.cheat_server = Cheat::TruncateSign(0),
+        _ => {}
+    }
+    let res = run_session(&params, &a, &b, &cfg, &mut rng);
+    serde_wasm_bindgen::to_value(&serde_json::json!({
+        "accepted": res.verdict.accepted,
+        "checks": res.verdict.checks,
+        "security": "toy, insecure",
+        "honesty": res.honesty,
+    }))
+    .unwrap_or(JsValue::NULL)
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn getrandom_browser_backend() {
+        let mut b = [0u8; 32];
+        getrandom::getrandom(&mut b).expect("getrandom");
+        assert!(b.iter().any(|&x| x != 0), "OS RNG returned zeros");
+    }
+
+    #[wasm_bindgen_test]
+    fn u128_lowering_mul() {
+        let a: u128 = (1u128 << 64) + 7;
+        let b: u128 = (1u128 << 64) + 3;
+        let p = a.wrapping_mul(b);
+        assert_ne!(p, 0);
+    }
 }

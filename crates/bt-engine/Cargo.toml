@@ -17,3 +17,7 @@ bt-market.workspace = true
 bt-arith.workspace = true
 serde.workspace = true
 rand_core.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+rand_chacha.workspace = true

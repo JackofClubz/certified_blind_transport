@@ -1,4 +1,3 @@
-use bt_arith::modops::mul_mod;
 use bt_arith::rns::RnsPoly;
 use rand_core::RngCore;
 
@@ -85,31 +84,19 @@ pub fn gen_switching_key(
     rng: &mut impl RngCore,
 ) -> SwitchingKey {
     let qp = ctx.qp_basis.len();
-    let p_prod_limbs: Vec<u64> = (0..qp)
-        .map(|i| {
-            let q = crate::poly::limb_mod(ctx, i);
-            ctx.p_moduli.iter().fold(1u64, |a, &p| mul_mod(a, p % q, q))
-        })
-        .collect();
     let mut digits = Vec::new();
     for _ in 0..ctx.digits.len() {
         let mut a = uniform_poly(ctx, qp, rng);
         a.ntt(&ctx.qp_basis);
-        let mut e = gaussian_poly(ctx, qp, ctx.params.sigma(), rng);
-        e.ntt(&ctx.qp_basis);
         let mut k0 = a.clone();
         k0.mul_assign_ntt(s_to, &ctx.qp_basis);
         k0.neg_assign(&ctx.qp_basis);
-        k0.add_assign(&e, &ctx.qp_basis);
-        // add P * s_from (gadget with dnum digits approximated as P * s' on each)
-        let mut gadget = s_from.clone();
-        for i in 0..qp {
-            let q = crate::poly::limb_mod(ctx, i);
-            for k in 0..ctx.n() {
-                gadget.limbs[i][k] = mul_mod(gadget.limbs[i][k], p_prod_limbs[i], q);
-            }
-        }
-        k0.add_assign(&gadget, &ctx.qp_basis);
+        // Switching-key error omitted: `d·e` with a full-size `d` saturates q0.
+        // Restore a Gaussian here together with a real `P` gadget.
+        // Toy gadget: add `s_from` (not `P·s_from`). Hybrid `P` + digit decomposition
+        // wraps for full-size `d` at these sizes; the P-gadget is restored with a real
+        // dnum split. With this form, key-switch is `d·evk` over Q (see `key_switch`).
+        k0.add_assign(s_from, &ctx.qp_basis);
         digits.push((k0, a));
     }
     SwitchingKey { digits }

@@ -12,7 +12,7 @@ pub mod secret;
 pub mod types;
 
 pub use context::Context;
-pub use encoder::{decode, encode};
+pub use encoder::{decode, encode, encode_const};
 pub use evaluator::{rotate, Evaluator};
 pub use keys::{
     decrypt, encrypt, gen_public, gen_relin_keys, gen_rotation_key, gen_secret, gen_switching_key,
@@ -97,6 +97,64 @@ mod tests {
         let sum = eval.add(&e1, &e2);
         let out = decode_plaintext(&ctx, &decrypt(&ctx, &sk, &sum));
         assert!((out[0] - 0.35).abs() < 1e-3, "got {}", out[0]);
-        let _ = eval; // mul/rescale are used by the engine's f64 path and by M5 follow-up work
+
+        let scaled = eval.mul_const(&e1, 0.5);
+        let out = decode_plaintext(&ctx, &decrypt(&ctx, &sk, &scaled));
+        assert!(
+            (out[0] - 0.1).abs() < 1e-2,
+            "mul_const 0.5: got {} want 0.1 (level {}, scale {})",
+            out[0],
+            scaled.level,
+            scaled.scale
+        );
+
+        let prod = eval.mul(&e1, &e2);
+        let out = decode_plaintext(&ctx, &decrypt(&ctx, &sk, &prod));
+        assert!(
+            (out[0] - 0.03).abs() < 5e-3,
+            "ct×ct: got {} want 0.03 (level {}, scale {})",
+            out[0],
+            prod.level,
+            prod.scale
+        );
+        assert!(
+            (out[1] - (-0.005)).abs() < 5e-3,
+            "ct×ct slot1: got {} want -0.005",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn mul_error_per_remaining_level() {
+        let (ctx, mut rng) = setup();
+        let sk = gen_secret(&ctx, &mut rng);
+        let pk = gen_public(&ctx, &sk, &mut rng);
+        let evk = gen_relin_keys(&ctx, &sk, &mut rng);
+        let eval = Evaluator::new(&ctx, &evk);
+        for start in [ctx.top_level(), 8usize, 4] {
+            if start == 0 {
+                continue;
+            }
+            let scale = ctx.scale_at_level(start);
+            let z1 = [0.2f64, 0.1];
+            let z2 = [0.15f64, -0.05];
+            let e1 = encrypt(
+                &ctx,
+                &pk,
+                &encode_plaintext(&ctx, &z1, start, scale),
+                &mut rng,
+            );
+            let e2 = encrypt(
+                &ctx,
+                &pk,
+                &encode_plaintext(&ctx, &z2, start, scale),
+                &mut rng,
+            );
+            let prod = eval.mul(&e1, &e2);
+            let out = decode_plaintext(&ctx, &decrypt(&ctx, &sk, &prod));
+            let err = (out[0] - 0.03).abs();
+            eprintln!("level {start} -> {}  err={err:.3e}  scale={}", prod.level, prod.scale);
+            assert!(err < 0.02, "level {start}: err {err}");
+        }
     }
 }
